@@ -17,6 +17,7 @@ from custom_components.goodwe_semsplus.const import (
     DEVICE_STATUS_URL,
     LOGIN_URL,
     MAX_REAUTHENTICATION_ATTEMPTS,
+    PORTAL_STATIONS_URL,
     SEMS_HOST,
     STATION_FLOW_URL,
     STATION_INFO_URL,
@@ -90,6 +91,22 @@ class TestSemsPlusClient:
                         "countryCode": "NL",
                     }
                 ]
+            },
+        }
+
+    def _mock_empty_stations_response(self):
+        """Return a mocked station list without stations, as installer accounts receive it."""
+        return {"code": "00000", "msg": "success", "data": {"dataList": []}}
+
+    def _mock_portal_page(self, station_ids, total):
+        """Return a mocked page of the portal station list."""
+        return {
+            "code": "00000",
+            "data": {
+                "dataList": [{"id": station_id, "name": station_id} for station_id in station_ids],
+                "size": 50,
+                "current": 1,
+                "total": total,
             },
         }
 
@@ -182,6 +199,58 @@ class TestSemsPlusClient:
 
         assert len(stations) == 1
         assert stations[0]["stationId"] == self.station_id
+
+    def test_get_stations_falls_back_to_portal_for_installer_accounts(self, mock_requests):
+        """Installer accounts have no personal stations, so the portal list is used."""
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        personal = mock_requests.post(STATIONS_URL, json=self._mock_empty_stations_response())
+        portal = mock_requests.post(
+            PORTAL_STATIONS_URL, json=self._mock_portal_page(["station-a", "station-b"], 2)
+        )
+
+        client = SemsPlusClient(self.email, self.password)
+        stations = client.get_stations()
+
+        assert [station["id"] for station in stations] == ["station-a", "station-b"]
+        assert portal.last_request.json() == {"current": 1, "size": 50}
+
+        # The fallback is remembered, later calls skip the personal station query.
+        client.get_stations()
+        assert personal.call_count == 1
+        assert portal.call_count == 2
+
+    def test_get_stations_pages_through_portal_list(self, mock_requests):
+        """Every page of the portal station list is collected."""
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        mock_requests.post(STATIONS_URL, json=self._mock_empty_stations_response())
+        portal = mock_requests.post(
+            PORTAL_STATIONS_URL,
+            [
+                {"json": self._mock_portal_page(["station-a", "station-b"], 3)},
+                {"json": self._mock_portal_page(["station-c"], 3)},
+            ],
+        )
+
+        client = SemsPlusClient(self.email, self.password)
+        stations = client.get_stations()
+
+        assert [station["id"] for station in stations] == ["station-a", "station-b", "station-c"]
+        assert [request.json()["current"] for request in portal.request_history] == [1, 2]
+
+    def test_get_stations_without_any_stations(self, mock_requests):
+        """An account without stations gets an empty list and no remembered fallback."""
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        personal = mock_requests.post(STATIONS_URL, json=self._mock_empty_stations_response())
+        mock_requests.post(PORTAL_STATIONS_URL, json=self._mock_portal_page([], 0))
+
+        client = SemsPlusClient(self.email, self.password)
+
+        assert client.get_stations() == []
+        client.get_stations()
+        assert personal.call_count == 2
 
     def test_get_station_info(self, mock_requests):
         """Test getting station info."""

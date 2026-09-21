@@ -13,6 +13,9 @@ from .const import (
     DEVICE_STATUS_URL,
     LOGIN_URL,
     MAX_REAUTHENTICATION_ATTEMPTS,
+    PORTAL_STATIONS_MAX_PAGES,
+    PORTAL_STATIONS_PAGE_SIZE,
+    PORTAL_STATIONS_URL,
     SEMS_HOST,
     STATION_FLOW_URL,
     STATION_INFO_URL,
@@ -72,6 +75,13 @@ _EMPTY_TOKEN = json.dumps(
 )
 
 
+def _station_list(data) -> list:
+    """Extract the station list from a paged or plain station response."""
+    if isinstance(data, dict):
+        return data.get("dataList", data.get("list", [])) or []
+    return data or []
+
+
 def _gateway_headers(token_json: str) -> dict:
     """Build gateway-specific headers including token and signature."""
     return {
@@ -93,6 +103,7 @@ class SemsPlusClient:
         self._token_json: str = ""
         self._token_expiry: float = 0
         self._reauthentication_attempts: int = 0
+        self._use_portal_stations: bool = False
         _LOGGER.debug("SemsPlusClient initialized for %s", email)
 
     def _authenticate(self) -> None:
@@ -243,18 +254,52 @@ class SemsPlusClient:
         return self._request("GET", USER_URL)
 
     def get_stations(self) -> list:
-        """Get list of stations."""
-        data = self._request(
-            "POST",
-            STATIONS_URL,
-            json={
-                "pageIndex": 1,
-                "pageSize": 50,
-            },
-        )
-        if isinstance(data, dict):
-            return data.get("dataList", data.get("list", []))
-        return data
+        """Get list of stations.
+
+        Owner accounts get their stations from ``stations/simple-query``. Installer
+        accounts manage stations through an organisation, so that endpoint returns
+        an empty list for them; the SEMS+ portal lists those stations via
+        ``portal/stations/page`` instead, which is used as a fallback. Once the
+        fallback has returned stations it is used directly on later calls.
+        """
+        if not self._use_portal_stations:
+            data = self._request(
+                "POST",
+                STATIONS_URL,
+                json={
+                    "pageIndex": 1,
+                    "pageSize": 50,
+                },
+            )
+            stations = _station_list(data)
+            if stations:
+                return stations
+            _LOGGER.debug("No personal stations found, trying the portal station list")
+
+        stations = self._get_portal_stations()
+        if stations and not self._use_portal_stations:
+            _LOGGER.info("Using the portal station list (%d stations)", len(stations))
+            self._use_portal_stations = True
+        return stations
+
+    def _get_portal_stations(self) -> list:
+        """Page through the portal station list used by installer accounts."""
+        stations: list = []
+        for page in range(1, PORTAL_STATIONS_MAX_PAGES + 1):
+            data = self._request(
+                "POST",
+                PORTAL_STATIONS_URL,
+                json={"current": page, "size": PORTAL_STATIONS_PAGE_SIZE},
+            )
+            batch = _station_list(data)
+            stations.extend(batch)
+            try:
+                total = int(data.get("total")) if isinstance(data, dict) else None
+            except (TypeError, ValueError):
+                total = None
+            if not batch or total is None or len(stations) >= total:
+                break
+        return stations
 
     def get_station_info(self, station_id: str) -> dict:
         """Get station basic info (power, energy, etc.)."""

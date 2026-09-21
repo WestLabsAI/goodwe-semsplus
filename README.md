@@ -40,6 +40,7 @@ This integration is installed through HACS as a custom repository.
 
 ## Notes
 
+- Accounts with the installer role, which manage stations through an organisation, are supported: when the account owns no stations, the integration uses the station list of the SEMS+ portal.
 - Credentials are stored through the Home Assistant config entry flow.
 - The integration uses cloud polling.
 - If login fails, verify your SEMS+ credentials and that the account can log in at `https://semsplus.goodwe.com`.
