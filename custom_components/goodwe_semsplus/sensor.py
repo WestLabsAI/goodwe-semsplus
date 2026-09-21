@@ -8,7 +8,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -19,9 +19,20 @@ from .coordinator import SemsPlusCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
+# Each sensor reads `field` from one part of the station data: "flow" is the real-time
+# power flow, "info" the station basic info, "summary" the station's entry in the
+# station list. Flow powers are reported in kW and scaled to W. `fallback` names a
+# (source, field) pair to use when the primary field is missing.
+#
+# Sign conventions of the flow powers, verified against the SEMS+ portal:
+#   pGrid: positive = export to the grid, negative = import from the grid
+#   pBat:  positive = battery discharging, negative = battery charging
 STATION_SENSORS = [
     {
         "key": "pac",
+        "source": "flow",
+        "field": "pAc",
+        "scale": 1000,
         "name": "Current Power",
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
@@ -29,6 +40,9 @@ STATION_SENSORS = [
     },
     {
         "key": "eDay",
+        "source": "info",
+        "field": "eDay",
+        "fallback": ("summary", "productionToday"),
         "name": "Energy Today",
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
@@ -36,6 +50,8 @@ STATION_SENSORS = [
     },
     {
         "key": "eMonth",
+        "source": "info",
+        "field": "eMonth",
         "name": "Energy This Month",
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
@@ -43,10 +59,61 @@ STATION_SENSORS = [
     },
     {
         "key": "eTotal",
+        "source": "info",
+        "field": "eTotal",
         "name": "Total Energy",
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
         "state_class": SensorStateClass.TOTAL_INCREASING,
+    },
+    {
+        "key": "pv_power",
+        "source": "flow",
+        "field": "pSystem",
+        "scale": 1000,
+        "name": "PV Power",
+        "unit": UnitOfPower.WATT,
+        "device_class": SensorDeviceClass.POWER,
+        "state_class": SensorStateClass.MEASUREMENT,
+    },
+    {
+        "key": "load_power",
+        "source": "flow",
+        "field": "pConsum",
+        "scale": 1000,
+        "name": "Load Power",
+        "unit": UnitOfPower.WATT,
+        "device_class": SensorDeviceClass.POWER,
+        "state_class": SensorStateClass.MEASUREMENT,
+    },
+    {
+        "key": "grid_power",
+        "source": "flow",
+        "field": "pGrid",
+        "scale": 1000,
+        "name": "Grid Power",
+        "unit": UnitOfPower.WATT,
+        "device_class": SensorDeviceClass.POWER,
+        "state_class": SensorStateClass.MEASUREMENT,
+    },
+    {
+        "key": "battery_power",
+        "source": "flow",
+        "field": "pBat",
+        "scale": 1000,
+        "name": "Battery Power",
+        "unit": UnitOfPower.WATT,
+        "device_class": SensorDeviceClass.POWER,
+        "state_class": SensorStateClass.MEASUREMENT,
+    },
+    {
+        "key": "battery_soc",
+        "source": "flow",
+        "field": "soc",
+        "name": "Battery State of Charge",
+        "unit": PERCENTAGE,
+        "device_class": SensorDeviceClass.BATTERY,
+        "state_class": SensorStateClass.MEASUREMENT,
     },
 ]
 
@@ -106,6 +173,10 @@ class SemsPlusStationSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._station_id = station_id
         self._key = sensor_def["key"]
+        self._source = sensor_def["source"]
+        self._field = sensor_def["field"]
+        self._scale = sensor_def.get("scale", 1)
+        self._fallback = sensor_def.get("fallback")
         self._attr_name = f"{station_name} {sensor_def['name']}"
         self._attr_unique_id = f"{station_id}_{self._key}"
         self._attr_native_unit_of_measurement = sensor_def["unit"]
@@ -122,22 +193,16 @@ class SemsPlusStationSensor(CoordinatorEntity, SensorEntity):
         """Return the sensor value."""
         station = self.coordinator.data.get("stations", {}).get(self._station_id, {})
 
-        if self._key == "pac":
-            flow = station.get("flow", {})
-            pac_kw = flow.get("pAc")
-            if pac_kw is None:
-                return None
-            try:
-                return float(pac_kw) * 1000
-            except (ValueError, TypeError):
-                return None
-
-        info = station.get("info", {})
-        value = info.get(self._key)
+        # A station that is not producing omits most flow fields, so a missing field
+        # means unknown rather than zero.
+        value = (station.get(self._source) or {}).get(self._field)
+        if value is None and self._fallback:
+            source, field = self._fallback
+            value = (station.get(source) or {}).get(field)
         if value is None:
             return None
         try:
-            return float(value)
+            return float(value) * self._scale
         except (ValueError, TypeError):
             return None
 

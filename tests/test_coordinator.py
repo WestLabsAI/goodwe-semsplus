@@ -70,6 +70,7 @@ async def test_coordinator_update_data_success_nested_devices(hass):
     assert "" not in data["stations"]
     assert data["stations"]["station-1"]["name"] == "Main Station"
     assert data["stations"]["station-1"]["flow"]["pAc"] == 0.5
+    assert data["stations"]["station-1"]["summary"] == {"id": "station-1", "name": "Main Station"}
     assert len(data["stations"]["station-1"]["devices"]) == 2
     assert data["stations"]["station-1"]["devices"][0]["sn"] == "INV-001"
 

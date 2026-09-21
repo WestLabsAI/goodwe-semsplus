@@ -46,7 +46,7 @@ async def test_sensor_async_setup_entry_creates_entities():
 
     add_entities.assert_called_once()
     entities = add_entities.call_args[0][0]
-    # 4 station sensors + 2 device status sensors
+    # One entity per station sensor definition + 2 device status sensors
     assert len(entities) == len(STATION_SENSORS) + 2
 
 
@@ -93,6 +93,56 @@ def test_station_sensor_native_value_non_numeric_returns_none():
     )
 
     assert sensor.native_value is None
+
+
+def _station_sensor(station_data, key):
+    """Build a station sensor for the given key over one station's data."""
+    coordinator = MagicMock()
+    coordinator.data = {"stations": {"station-1": station_data}}
+    sensor_def = next(d for d in STATION_SENSORS if d["key"] == key)
+    return SemsPlusStationSensor(
+        coordinator=coordinator,
+        station_id="station-1",
+        station_name="Main Station",
+        sensor_def=sensor_def,
+    )
+
+
+def test_flow_sensors_report_signed_powers_in_watt():
+    """Flow powers are converted to W and keep their sign (battery charging, grid import)."""
+    flow = {
+        "pAc": 0.33561,
+        "pSystem": 2.286,
+        "pConsum": 0.33861,
+        "pGrid": -0.003,
+        "pBat": -1.95039,
+        "soc": 48,
+    }
+    station = {"flow": flow, "info": {}}
+
+    assert _station_sensor(station, "pv_power").native_value == pytest.approx(2286)
+    assert _station_sensor(station, "load_power").native_value == pytest.approx(338.61)
+    assert _station_sensor(station, "grid_power").native_value == pytest.approx(-3)
+    assert _station_sensor(station, "battery_power").native_value == pytest.approx(-1950.39)
+    assert _station_sensor(station, "battery_soc").native_value == 48
+
+
+def test_flow_sensors_unknown_while_station_is_idle():
+    """An idle station reports only pAc; the other flow sensors are unknown, not zero."""
+    station = {"flow": {"pAc": 0, "flows": {}}, "info": {}}
+
+    assert _station_sensor(station, "pac").native_value == 0
+    for key in ("pv_power", "load_power", "grid_power", "battery_power", "battery_soc"):
+        assert _station_sensor(station, key).native_value is None
+
+
+def test_energy_today_falls_back_to_station_list():
+    """Energy Today uses productionToday from the station list when info lacks eDay."""
+    fallback = {"info": {}, "summary": {"productionToday": 4.3}}
+    assert _station_sensor(fallback, "eDay").native_value == 4.3
+
+    preferred = {"info": {"eDay": 5.5}, "summary": {"productionToday": 4.3}}
+    assert _station_sensor(preferred, "eDay").native_value == 5.5
 
 
 def test_device_status_sensor_maps_status_and_unknown():

@@ -104,6 +104,9 @@ class SemsPlusCoordinator(DataUpdateCoordinator):
                     "flow": station_flow,
                     "devices": devices,
                     "name": station.get("name", station_id),
+                    # The station list entry carries figures such as productionToday
+                    # that the basic info endpoint does not return.
+                    "summary": station,
                 }
 
             _LOGGER.info(

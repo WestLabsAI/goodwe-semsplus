@@ -38,6 +38,24 @@ This integration is installed through HACS as a custom repository.
 2. Restart Home Assistant.
 3. Add the integration from `Settings` -> `Devices & Services`.
 
+## Sensors
+
+Each station gets these sensors:
+
+| Sensor | Unit | Notes |
+|---|---|---|
+| Current Power | W | AC output of the inverter. For hybrid systems this differs from PV power while the battery charges or discharges. |
+| PV Power | W | Solar generation. |
+| Load Power | W | Household consumption. |
+| Grid Power | W | Positive while exporting to the grid, negative while importing. |
+| Battery Power | W | Positive while the battery discharges, negative while it charges. |
+| Battery State of Charge | % | |
+| Energy Today | kWh | |
+| Energy This Month | kWh | |
+| Total Energy | kWh | |
+
+A station that is not producing, for example at night or before commissioning, reports only its AC output; the other power sensors are unknown until the station produces again.
+
 ## Notes
 
 - Accounts with the installer role, which manage stations through an organisation, are supported: when the account owns no stations, the integration uses the station list of the SEMS+ portal.
