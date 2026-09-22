@@ -449,20 +449,54 @@ class TestSemsPlusClient:
             client.get_user()
 
     def test_max_reauthentication_attempts_exceeded(self, mock_requests):
-        """Test that exceeding max reauthentication attempts raises error."""
+        """A token the gateway keeps rejecting gives up after the attempt limit."""
         mock_requests.get(SEMS_HOST, text="")
         mock_requests.post(LOGIN_URL, json=self._mock_login_response())
         # Mock USER_URL to return C0602 (token expired)
         mock_requests.get(USER_URL, json={"code": "C0602", "msg": "Token expired"})
 
         client = SemsPlusClient(self.email, self.password)
-        # Establish initial session by making one call
-        with pytest.raises(SemsPlusApiError):
-            client.get_user()  # First call gets C0602, increments counter
 
-        # Now set counter to max to test the limit check on next request
-        client._reauthentication_attempts = MAX_REAUTHENTICATION_ATTEMPTS
-
-        # This should raise SemsPlusApiError about max attempts exceeded
         with pytest.raises(SemsPlusApiError, match="Max reauthentication attempts"):
             client.get_user()
+
+        # The initial login plus one re-login per attempt, and no more.
+        logins = [r for r in mock_requests.request_history if r.url == LOGIN_URL]
+        assert len(logins) == MAX_REAUTHENTICATION_ATTEMPTS + 1
+
+    def test_parallel_requests_log_in_once(self, mock_requests):
+        """A token rejected in several threads triggers only one new login.
+
+        Logging in repeatedly makes the gateway treat the account as abnormal, so
+        requests that were holding the same stale token reuse the refreshed one.
+        """
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        mock_requests.get(
+            USER_URL,
+            [
+                {"json": {"code": "C0602", "msg": "Token expired"}},
+                {"json": self._mock_user_response()},
+            ],
+        )
+        mock_requests.get(
+            f"{STATION_FLOW_URL}?stationId={self.station_id}",
+            [
+                {"json": {"code": "C0602", "msg": "Token expired"}},
+                {"json": self._mock_station_flow_response()},
+            ],
+        )
+
+        client = SemsPlusClient(self.email, self.password)
+        client._ensure_session()
+        generation = client._token_generation
+
+        # One request hits the rejected token and refreshes it.
+        client.get_user()
+        assert client._token_generation == generation + 1
+
+        # A second request that was still holding the old token does not log in again.
+        client._authenticate(seen_generation=generation)
+
+        logins = [r for r in mock_requests.request_history if r.url == LOGIN_URL]
+        assert len(logins) == 2  # the initial login and the one refresh
