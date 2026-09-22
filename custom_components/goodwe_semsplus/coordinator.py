@@ -17,6 +17,7 @@ from .const import (
     PRODUCTION_INTERVAL_SECONDS,
     PRODUCTION_TOTAL_INTERVAL_SECONDS,
     SCAN_INTERVAL_SECONDS,
+    SLOW_QUERIES_PER_CYCLE,
     STATION_INFO_INTERVAL_SECONDS,
 )
 
@@ -92,6 +93,7 @@ class SemsPlusCoordinator(DataUpdateCoordinator):
         # Slow-moving data is kept between cycles and refreshed on its own schedule.
         self._cache: dict[str, dict] = {}
         self._fetched_at: dict[tuple[str, str], float] = {}
+        self._slow_budget = SLOW_QUERIES_PER_CYCLE
         _LOGGER.debug("SemsPlusCoordinator initialized")
 
     async def _call(self, func, *args):
@@ -100,9 +102,19 @@ class SemsPlusCoordinator(DataUpdateCoordinator):
             return await self.hass.async_add_executor_job(func, *args)
 
     def _is_due(self, station_id: str, kind: str, interval: int) -> bool:
-        """Return True when this kind of data has not been fetched recently."""
+        """Return True when this data is stale and the cycle still has budget for it.
+
+        Without the budget every station would refresh its slow data in the same
+        cycle, which the gateway answers with HTTP 429. Whatever does not fit is
+        picked up by one of the next cycles.
+        """
         last = self._fetched_at.get((station_id, kind))
-        return last is None or (self.hass.loop.time() - last) >= interval
+        if last is not None and (self.hass.loop.time() - last) < interval:
+            return False
+        if self._slow_budget <= 0:
+            return False
+        self._slow_budget -= 1
+        return True
 
     def _mark_fetched(self, station_id: str, kind: str) -> None:
         self._fetched_at[(station_id, kind)] = self.hass.loop.time()
@@ -110,6 +122,7 @@ class SemsPlusCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         """Fetch data from SEMS+ API."""
         _LOGGER.debug("Starting data update from SEMS+ API")
+        self._slow_budget = SLOW_QUERIES_PER_CYCLE
         try:
             stations = await self._call(self.client.get_stations)
         except SemsPlusAuthError as err:

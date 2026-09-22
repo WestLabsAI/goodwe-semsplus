@@ -39,8 +39,16 @@ MIN_TOKEN_LIFETIME_SECONDS = 600
 PORTAL_STATIONS_PAGE_SIZE = 50
 PORTAL_STATIONS_MAX_PAGES = 20  # Upper bound on paging, i.e. up to 1000 stations
 
-# Concurrent API requests. The gateway is a shared cloud service, so this stays modest.
-MAX_PARALLEL_REQUESTS = 4
+# Concurrent API requests. The gateway answers bursts with HTTP 429, so this stays low.
+MAX_PARALLEL_REQUESTS = 2
+# A rejected request is retried after this many seconds, doubling per attempt.
+RATE_LIMIT_BACKOFF_SECONDS = 3
+RATE_LIMIT_MAX_RETRIES = 2
+
+# Data that does not change every cycle is fetched on its own, slower schedule. At most
+# this many of those queries run per cycle, so a portfolio of stations spreads its
+# refreshes over several cycles instead of flooding the gateway in one.
+SLOW_QUERIES_PER_CYCLE = 4
 
 # Data that does not change every cycle is fetched on its own, slower schedule.
 STATION_INFO_INTERVAL_SECONDS = 3600

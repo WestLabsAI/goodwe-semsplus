@@ -21,6 +21,8 @@ from .const import (
     PORTAL_STATIONS_URL,
     PRODUCTION_ITEMS,
     PRODUCTION_ITEMS_EXTRA,
+    RATE_LIMIT_BACKOFF_SECONDS,
+    RATE_LIMIT_MAX_RETRIES,
     SEMS_HOST,
     STATION_FLOW_URL,
     STATION_INFO_URL,
@@ -236,6 +238,30 @@ class SemsPlusClient:
             _LOGGER.debug("Using existing session, token valid for %.0f seconds", remaining)
         return self._session
 
+    def _send(self, session, method: str, url: str, headers: dict, **kwargs):
+        """Send one request, waiting and retrying while the gateway rate-limits us.
+
+        The gateway answers a burst of requests with HTTP 429. Backing off and
+        retrying is enough; the delay happens in the executor thread the call
+        already runs in.
+        """
+        delay = RATE_LIMIT_BACKOFF_SECONDS
+        for retry in range(RATE_LIMIT_MAX_RETRIES + 1):
+            resp = session.request(method, url, headers=headers, timeout=15, **kwargs)
+            if resp.status_code != 429 or retry == RATE_LIMIT_MAX_RETRIES:
+                resp.raise_for_status()
+                return resp
+            _LOGGER.debug(
+                "Rate limited on %s, retrying in %d seconds (attempt %d of %d)",
+                url,
+                delay,
+                retry + 1,
+                RATE_LIMIT_MAX_RETRIES,
+            )
+            time.sleep(delay)
+            delay *= 2
+        return resp
+
     def _request(self, method: str, url: str, log_errors: bool = True, **kwargs) -> dict:
         """Make an authenticated API request.
 
@@ -251,8 +277,7 @@ class SemsPlusClient:
             request_headers = {**headers, **_gateway_headers(token_json)}
 
             try:
-                resp = session.request(method, url, headers=request_headers, timeout=15, **kwargs)
-                resp.raise_for_status()
+                resp = self._send(session, method, url, request_headers, **kwargs)
                 data = resp.json()
             except requests.RequestException as err:
                 raise SemsPlusApiError(f"Request to {url} failed: {err}") from err
