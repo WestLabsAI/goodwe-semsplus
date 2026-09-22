@@ -100,7 +100,8 @@ class TestSemsPlusControlButton:
         assert button._device_sn == "DEVICE-001"
         assert button._device_name == "SolarGoodwe"
         assert button._plant_id == "plant-123"
-        assert button._attr_name == "SolarGoodwe Stop"
+        # The device name is added by Home Assistant, the entity only names the action.
+        assert button._attr_name == "Stop"
         assert button._attr_unique_id == "DEVICE-001_stop"
 
     def test_button_initialization_start(self, mock_coordinator):
@@ -117,7 +118,8 @@ class TestSemsPlusControlButton:
         )
 
         assert button._action == "start"
-        assert button._attr_name == "SolarGoodwe Start"
+        # The device name is added by Home Assistant, the entity only names the action.
+        assert button._attr_name == "Start"
         assert button._attr_unique_id == "DEVICE-001_start"
 
     def test_button_initialization_restart(self, mock_coordinator):
@@ -134,7 +136,8 @@ class TestSemsPlusControlButton:
         )
 
         assert button._action == "restart"
-        assert button._attr_name == "SolarGoodwe Restart"
+        # The device name is added by Home Assistant, the entity only names the action.
+        assert button._attr_name == "Restart"
         assert button._attr_unique_id == "DEVICE-001_restart"
 
     def test_device_info(self, mock_coordinator):
@@ -154,8 +157,10 @@ class TestSemsPlusControlButton:
         assert device_info["identifiers"] == {(DOMAIN, "DEVICE-001")}
         assert device_info["name"] == "SolarGoodwe"
         assert device_info["manufacturer"] == "GoodWe"
-        assert device_info["model"] == "Inverter"
-        assert device_info["via_device"] == (DOMAIN, "station-123")
+        assert device_info["serial_number"] == "DEVICE-001"
+        # The station link is set through the device registry, not through the
+        # deprecated via_device parameter.
+        assert "via_device" not in device_info
 
     @pytest.mark.asyncio
     async def test_button_press_stop(self, mock_coordinator):
@@ -556,9 +561,11 @@ class TestIntegrationSetup:
         )
 
         # Verify entity attributes
-        assert button._attr_name == "SolarGoodwe Stop"
+        # The device name is added by Home Assistant, the entity only names the action.
+        assert button._attr_name == "Stop"
         assert button._attr_unique_id == "DEVICE-001_stop"
-        assert button._attr_entity_registry_enabled_default is True
+        # Control buttons are created disabled so a stray press cannot stop a plant.
+        assert button._attr_entity_registry_enabled_default is False
 
         # Verify restart action has device class
         button_restart = SemsPlusControlButton(

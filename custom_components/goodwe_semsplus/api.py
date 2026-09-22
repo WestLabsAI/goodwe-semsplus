@@ -10,16 +10,22 @@ import requests
 
 from .const import (
     CONTROL_URL,
+    DEVICE_INFORMATION_URL,
     DEVICE_STATUS_URL,
     LOGIN_URL,
     MAX_REAUTHENTICATION_ATTEMPTS,
+    MIN_TOKEN_LIFETIME_SECONDS,
     PORTAL_STATIONS_MAX_PAGES,
     PORTAL_STATIONS_PAGE_SIZE,
     PORTAL_STATIONS_URL,
+    PRODUCTION_ITEMS,
+    PRODUCTION_ITEMS_EXTRA,
     SEMS_HOST,
     STATION_FLOW_URL,
     STATION_INFO_URL,
+    STATION_PRODUCTION_URL,
     STATIONS_URL,
+    TOKEN_LIFETIME_SECONDS,
     USER_URL,
 )
 
@@ -101,9 +107,12 @@ class SemsPlusClient:
         self._password = password
         self._session: requests.Session | None = None
         self._token_json: str = ""
+        self._token_issued: float = 0
         self._token_expiry: float = 0
+        self._token_lifetime: float = TOKEN_LIFETIME_SECONDS
         self._reauthentication_attempts: int = 0
         self._use_portal_stations: bool = False
+        self._production_items: list[str] = PRODUCTION_ITEMS + PRODUCTION_ITEMS_EXTRA
         _LOGGER.debug("SemsPlusClient initialized for %s", email)
 
     def _authenticate(self) -> None:
@@ -170,12 +179,32 @@ class SemsPlusClient:
         session.headers.update({"token": token_json})
         self._session = session
         self._token_json = token_json
-        # Token valid for ~6 hours, refresh at 5
-        self._token_expiry = time.time() + 5 * 3600
+        self._token_issued = time.time()
+        self._token_expiry = self._token_issued + self._token_lifetime
         self._reauthentication_attempts = 0  # Reset counter on successful auth
         _LOGGER.info(
-            "SEMS+ authentication successful, token expires in 5 hours, reauthentication attempts reset to 0"
+            "SEMS+ authentication successful, token assumed valid for %.0f minutes",
+            self._token_lifetime / 60,
         )
+
+    def _shorten_token_lifetime(self) -> None:
+        """Learn the real token lifetime from a token the gateway rejected early.
+
+        The login response carries no expiry, so the assumed lifetime is corrected
+        downwards whenever a token turns out to be shorter-lived than assumed. This
+        avoids a failed request before every refresh.
+        """
+        age = time.time() - self._token_issued
+        if not self._token_issued or age >= self._token_lifetime:
+            return
+        lifetime = max(MIN_TOKEN_LIFETIME_SECONDS, age * 0.9)
+        if lifetime < self._token_lifetime:
+            _LOGGER.debug(
+                "Token rejected after %.0f minutes, assuming a lifetime of %.0f minutes from now on",
+                age / 60,
+                lifetime / 60,
+            )
+            self._token_lifetime = lifetime
 
     def _ensure_session(self) -> requests.Session:
         """Ensure we have a valid session, re-authenticating if needed."""
@@ -208,6 +237,7 @@ class SemsPlusClient:
         _LOGGER.debug("API response code: %s", code)
         if code == "C0602":
             # Token expired, re-auth and retry with limit
+            self._shorten_token_lifetime()
             self._reauthentication_attempts += 1
             _LOGGER.warning(
                 "Token expired (C0602), reauthentication attempt %d of %d",
@@ -322,6 +352,50 @@ class SemsPlusClient:
             "GET",
             f"{DEVICE_STATUS_URL}?stationId={station_id}",
         )
+
+    def get_station_production(
+        self, station_id: str, dimension: str, start_time: str, end_time: str
+    ) -> dict:
+        """Get energy and revenue totals for a station over a period.
+
+        ``dimension`` is one of ``day``, ``week``, ``month`` or ``year``; the period
+        itself comes from ``start_time``/``end_time`` (``%Y-%m-%d %H:%M:%S``). The
+        response holds one value per requested metric, in kWh and account currency.
+        """
+        payload = {
+            "stationId": station_id,
+            "items": self._production_items,
+            "dimension": dimension,
+            "isReport": False,
+            "startTime": start_time,
+            "endTime": end_time,
+        }
+        try:
+            data = self._request("POST", STATION_PRODUCTION_URL, json=payload)
+        except SemsPlusApiError:
+            if self._production_items == PRODUCTION_ITEMS:
+                raise
+            # Battery charge/discharge are not offered by every station; fall back to
+            # the metrics the portal itself always requests.
+            _LOGGER.debug("Production query rejected, retrying without %s", PRODUCTION_ITEMS_EXTRA)
+            self._production_items = PRODUCTION_ITEMS
+            payload["items"] = self._production_items
+            data = self._request("POST", STATION_PRODUCTION_URL, json=payload)
+        return data if isinstance(data, dict) else {}
+
+    def get_device_information(self, sn: str) -> dict:
+        """Get static information for one device, keyed by metric code.
+
+        The gateway answers with a list of ``{"code": ..., "data": ...}`` entries
+        holding values such as ``modelType`` and ``ratedPower``.
+        """
+        data = self._request("GET", DEVICE_INFORMATION_URL.format(sn=sn))
+        entries = data if isinstance(data, list) else []
+        return {
+            item["code"]: item.get("data")
+            for item in entries
+            if isinstance(item, dict) and item.get("code")
+        }
 
     def stop_inverter(self, sn: str, plant_id: str, device_name: str) -> dict:
         """Send stop command to inverter."""

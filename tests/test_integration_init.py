@@ -40,8 +40,11 @@ async def test_async_setup_entry_registers_coordinator_and_platforms():
     with (
         patch("custom_components.goodwe_semsplus.SemsPlusClient") as mock_client_cls,
         patch("custom_components.goodwe_semsplus.SemsPlusCoordinator", return_value=coordinator),
+        patch("custom_components.goodwe_semsplus._register_devices") as mock_register,
     ):
         result = await async_setup_entry(hass, entry)
+
+    mock_register.assert_called_once()
 
     assert result is True
     mock_client_cls.assert_called_once_with(email="user@example.com", password="secret")

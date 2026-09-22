@@ -7,11 +7,13 @@ from datetime import datetime
 from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_COMMAND_DELAY, DEFAULT_COMMAND_DELAY, DOMAIN
 from .coordinator import SemsPlusCoordinator, _extract_devices
+from .device import device_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +27,20 @@ def _extract_device_sn(device: dict) -> str:
         or device.get("serialNo")
         or ""
     )
+
+
+def _is_inverter(device: dict) -> bool:
+    """Return True when the device accepts the inverter on/off command.
+
+    A station also reports data loggers, meters and EV chargers. The command writes
+    an inverter register, so it is meaningless for those, and buttons are created
+    only for inverters. Devices that do not state a type are treated as inverters,
+    which is how every device was treated before.
+    """
+    device_type = str(device.get("deviceType") or "").upper()
+    if not device_type:
+        return True
+    return "INVERTER" in device_type
 
 
 async def _build_station_data_from_api(
@@ -97,6 +113,14 @@ async def async_setup_entry(
             device_sn = _extract_device_sn(device)
             device_name = device.get("name") or device.get("deviceName") or device_sn
 
+            if not _is_inverter(device):
+                _LOGGER.debug(
+                    "Skipping control buttons for non-inverter device %s (%s)",
+                    device_name,
+                    device.get("deviceType"),
+                )
+                continue
+
             if not device_sn:
                 device_keys = list(device.keys()) if isinstance(device, dict) else []
                 _LOGGER.info(
@@ -148,7 +172,12 @@ async def async_setup_entry(
 class SemsPlusControlButton(CoordinatorEntity, ButtonEntity):
     """Button entity for inverter control commands."""
 
-    _attr_entity_registry_enabled_default = True
+    # Pressing one of these switches an inverter off, on or through a restart. They
+    # are created disabled so a stray press cannot stop a plant; enable them per
+    # device in the entity registry when the control is actually wanted.
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -182,7 +211,7 @@ class SemsPlusControlButton(CoordinatorEntity, ButtonEntity):
 
         # Build entity ID and name
         action_title = action.capitalize()
-        self._attr_name = f"{device_name} {action_title}"
+        self._attr_name = action_title
         self._attr_unique_id = f"{device_sn}_{action}"
         _LOGGER.info(
             "Button entity created: unique_id=%s, name=%s", self._attr_unique_id, self._attr_name
@@ -190,14 +219,14 @@ class SemsPlusControlButton(CoordinatorEntity, ButtonEntity):
 
     @property
     def device_info(self):
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._device_sn)},
-            "name": self._device_name,
-            "manufacturer": "GoodWe",
-            "model": "Inverter",
-            "via_device": (DOMAIN, self._station_id),
-        }
+        """Return device information.
+
+        The parent station is linked by the device registry in ``__init__``, so no
+        deprecated ``via_device`` is passed here.
+        """
+        station = self.coordinator.data.get("stations", {}).get(self._station_id, {})
+        information = (station.get("device_information") or {}).get(self._device_sn)
+        return device_device_info(self._device_sn, self._device_name, information)
 
     @property
     def available(self) -> bool:

@@ -14,13 +14,17 @@ from custom_components.goodwe_semsplus.api import (
 )
 from custom_components.goodwe_semsplus.const import (
     CONTROL_URL,
+    DEVICE_INFORMATION_URL,
     DEVICE_STATUS_URL,
     LOGIN_URL,
     MAX_REAUTHENTICATION_ATTEMPTS,
     PORTAL_STATIONS_URL,
+    PRODUCTION_ITEMS,
+    PRODUCTION_ITEMS_EXTRA,
     SEMS_HOST,
     STATION_FLOW_URL,
     STATION_INFO_URL,
+    STATION_PRODUCTION_URL,
     STATIONS_URL,
     USER_URL,
 )
@@ -296,6 +300,107 @@ class TestSemsPlusClient:
 
         # _request returns data.get("data", data), so we get the inner data directly
         assert status["deviceDetailList"][0]["statusDetailList"][0]["sn"] == self.sn
+
+    def test_get_station_production(self, mock_requests):
+        """Energy and revenue totals are requested for the given period."""
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        mock_requests.post(
+            STATION_PRODUCTION_URL,
+            json={
+                "code": "00000",
+                "data": {
+                    "proSystemTotalStats": 45.6,
+                    "proGridStats": 38.57,
+                    "proPurchaseStats": 0.07,
+                    "proConsumStats": 2.9,
+                    "profitProStats": 3.2832,
+                    "currency": "EUR",
+                },
+            },
+        )
+
+        client = SemsPlusClient(self.email, self.password)
+        production = client.get_station_production(
+            self.station_id, "day", "2026-09-22 00:00:00", "2026-09-22 23:59:59"
+        )
+
+        assert production["proSystemTotalStats"] == 45.6
+        assert production["currency"] == "EUR"
+        request = mock_requests.request_history[-1].json()
+        assert request["stationId"] == self.station_id
+        assert request["dimension"] == "day"
+        assert request["startTime"] == "2026-09-22 00:00:00"
+
+    def test_get_station_production_drops_unsupported_metrics(self, mock_requests):
+        """Charge and discharge are dropped once the gateway rejects them."""
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        mock_requests.post(
+            STATION_PRODUCTION_URL,
+            [
+                {"json": {"code": "C0001", "msg": "unknown item"}},
+                {"json": {"code": "00000", "data": {"proSystemTotalStats": 45.6}}},
+                {"json": {"code": "00000", "data": {"proSystemTotalStats": 812.4}}},
+            ],
+        )
+
+        client = SemsPlusClient(self.email, self.password)
+        first = client.get_station_production(
+            self.station_id, "day", "2026-09-22 00:00:00", "2026-09-22 23:59:59"
+        )
+        second = client.get_station_production(
+            self.station_id, "month", "2026-09-01 00:00:00", "2026-09-22 23:59:59"
+        )
+
+        assert first["proSystemTotalStats"] == 45.6
+        assert second["proSystemTotalStats"] == 812.4
+        assert mock_requests.request_history[-3].json()["items"] == (
+            PRODUCTION_ITEMS + PRODUCTION_ITEMS_EXTRA
+        )
+        # The retry and every later call ask only for the supported metrics.
+        assert mock_requests.request_history[-2].json()["items"] == PRODUCTION_ITEMS
+        assert mock_requests.request_history[-1].json()["items"] == PRODUCTION_ITEMS
+
+    def test_get_device_information(self, mock_requests):
+        """Device information is returned keyed by metric code."""
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        mock_requests.get(
+            DEVICE_INFORMATION_URL.format(sn=self.sn),
+            json={
+                "code": "00000",
+                "data": [
+                    {"code": "modelType", "data": "GW25K-ET"},
+                    {"code": "ratedPower", "data": "25.0"},
+                    {"data": "no code, skipped"},
+                ],
+            },
+        )
+
+        client = SemsPlusClient(self.email, self.password)
+        information = client.get_device_information(self.sn)
+
+        assert information == {"modelType": "GW25K-ET", "ratedPower": "25.0"}
+
+    def test_token_lifetime_shortens_after_an_early_rejection(self, mock_requests):
+        """A token rejected early shortens the assumed lifetime for the next login."""
+        mock_requests.get(SEMS_HOST, text="")
+        mock_requests.post(LOGIN_URL, json=self._mock_login_response())
+        mock_requests.get(
+            USER_URL,
+            [
+                {"json": {"code": "C0602", "msg": "token expired"}},
+                {"json": self._mock_user_response()},
+            ],
+        )
+
+        client = SemsPlusClient(self.email, self.password)
+        before = client._token_lifetime
+        client.get_user()
+
+        assert client._token_lifetime < before
+        assert client._token_expiry > 0
 
     def test_stop_inverter(self, mock_requests):
         """Test stopping inverter."""

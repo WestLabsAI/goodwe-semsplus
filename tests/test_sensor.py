@@ -9,8 +9,10 @@ sys.path.insert(0, ".")
 
 from custom_components.goodwe_semsplus.const import DOMAIN
 from custom_components.goodwe_semsplus.sensor import (
+    REVENUE_SENSORS,
     STATION_SENSORS,
     SemsPlusDeviceStatusSensor,
+    SemsPlusRevenueSensor,
     SemsPlusStationSensor,
     async_setup_entry,
 )
@@ -46,8 +48,9 @@ async def test_sensor_async_setup_entry_creates_entities():
 
     add_entities.assert_called_once()
     entities = add_entities.call_args[0][0]
-    # One entity per station sensor definition + 2 device status sensors
-    assert len(entities) == len(STATION_SENSORS) + 2
+    # One entity per station sensor definition, the revenue sensors, and 2 device
+    # status sensors
+    assert len(entities) == len(STATION_SENSORS) + len(REVENUE_SENSORS) + 2
 
 
 def test_station_sensor_native_value_from_flow_power_kw_to_watt():
@@ -137,12 +140,75 @@ def test_flow_sensors_unknown_while_station_is_idle():
 
 
 def test_energy_today_falls_back_to_station_list():
-    """Energy Today uses productionToday from the station list when info lacks eDay."""
-    fallback = {"info": {}, "summary": {"productionToday": 4.3}}
+    """Energy Today uses productionToday until the first production query answered."""
+    fallback = {"production": {}, "summary": {"productionToday": 4.3}}
     assert _station_sensor(fallback, "eDay").native_value == 4.3
 
-    preferred = {"info": {"eDay": 5.5}, "summary": {"productionToday": 4.3}}
+    preferred = {
+        "production": {"day": {"proSystemTotalStats": 5.5}},
+        "summary": {"productionToday": 4.3},
+    }
     assert _station_sensor(preferred, "eDay").native_value == 5.5
+
+
+def test_energy_sensors_read_their_production_period():
+    """Energy today, this month and total each read their own period."""
+    station = {
+        "production": {
+            "day": {"proSystemTotalStats": 45.6, "proGridStats": 38.57, "proPurchaseStats": 0.07},
+            "month": {"proSystemTotalStats": 812.4},
+            "total": {"proSystemTotalStats": 7841.2},
+        },
+        "summary": {},
+    }
+
+    assert _station_sensor(station, "eDay").native_value == 45.6
+    assert _station_sensor(station, "eMonth").native_value == 812.4
+    assert _station_sensor(station, "eTotal").native_value == 7841.2
+    assert _station_sensor(station, "grid_export_today").native_value == 38.57
+    assert _station_sensor(station, "grid_import_today").native_value == 0.07
+    # A period that has not been fetched yet reads unknown rather than zero.
+    assert _station_sensor({"production": {}, "summary": {}}, "eTotal").native_value is None
+
+
+def test_station_list_sensors_read_the_summary():
+    """The figures the station list already carries need no extra request."""
+    station = {
+        "summary": {
+            "proCharStatsToday": 4.3,
+            "proDischarStatsToday": 1.3,
+            "fullHourToday": 1.82,
+            "specificYield": 313.6,
+            "irradiationToday": 2.4,
+        },
+    }
+
+    assert _station_sensor(station, "battery_charge_today").native_value == 4.3
+    assert _station_sensor(station, "battery_discharge_today").native_value == 1.3
+    assert _station_sensor(station, "full_load_hours_today").native_value == 1.82
+    assert _station_sensor(station, "specific_yield").native_value == 313.6
+    assert _station_sensor(station, "irradiation_today").native_value == 2.4
+
+
+def test_revenue_sensor_takes_unit_from_the_response():
+    """Revenue is reported in whatever currency the account uses."""
+    coordinator = MagicMock()
+    coordinator.data = {
+        "stations": {
+            "station-1": {
+                "production": {"day": {"profitProStats": 3.2832, "currency": "EUR"}},
+            }
+        }
+    }
+    sensor = SemsPlusRevenueSensor(
+        coordinator=coordinator,
+        station_id="station-1",
+        station_name="Main Station",
+        sensor_def=REVENUE_SENSORS[0],
+    )
+
+    assert sensor.native_value == pytest.approx(3.2832)
+    assert sensor.native_unit_of_measurement == "EUR"
 
 
 def test_device_status_sensor_maps_status_and_unknown():

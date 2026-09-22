@@ -8,11 +8,37 @@
           "email": "Email",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "GoodWe SEMS+ Login",
+        "description": "The SEMS+ password for {email} was rejected. Enter the current password.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid email or password",
       "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This account is already configured",
+      "reauth_successful": "Reauthentication was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "GoodWe SEMS+ Options",
+        "data": {
+          "scan_interval_seconds": "Update interval (seconds)",
+          "command_delay_seconds": "Delay after a control command (seconds)"
+        },
+        "data_description": {
+          "scan_interval_seconds": "How often the power flow of every station is read. Each station costs two requests per update, so raise this when you monitor many stations.",
+          "command_delay_seconds": "How long the Stop, Start and Restart buttons stay unavailable after a press."
+        }
+      }
     }
   }
 }
